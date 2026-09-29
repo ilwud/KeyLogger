@@ -1,24 +1,28 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs
 from datetime import datetime
-import hashlib
 import html
-import os
 import sqlite3
 
 DB = "pendaftaran.db"
 
+# Buat tabel baru jika database belum ada
 with sqlite3.connect(DB) as db:
     db.execute("""
         CREATE TABLE IF NOT EXISTS peserta (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nama TEXT NOT NULL,
             email TEXT NOT NULL UNIQUE,
-            salt BLOB NOT NULL,
-            password_hash BLOB NOT NULL,
+            nama_panggilan TEXT,
             waktu_daftar TEXT NOT NULL
         )
     """)
+
+    # Tambahkan kolom nama_panggilan jika memakai database dari kode sebelumnya
+    kolom = {baris[1] for baris in db.execute("PRAGMA table_info(peserta)")}
+    if "nama_panggilan" not in kolom:
+        db.execute("ALTER TABLE peserta ADD COLUMN nama_panggilan TEXT")
+
 
 def halaman(isi):
     return f"""<!doctype html>
@@ -71,9 +75,11 @@ def halaman(isi):
 <body><main class="kartu">{isi}</main></body>
 </html>"""
 
+
 FORM = """
 <h1>Pendaftaran Lomba Kampus</h1>
 <p>Isi data berikut untuk mendaftar sebagai peserta.</p>
+
 <form method="post">
   <label for="nama">Nama lengkap</label>
   <input id="nama" name="nama" required maxlength="100">
@@ -81,13 +87,13 @@ FORM = """
   <label for="email">Email</label>
   <input id="email" name="email" type="email" required maxlength="150">
 
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password"
-         required minlength="8" autocomplete="new-password">
+  <label for="nama_panggilan">Nama panggilan</label>
+  <input id="nama_panggilan" name="nama_panggilan" required maxlength="50">
 
   <button type="submit">Daftar Sekarang</button>
 </form>
 """
+
 
 class Handler(BaseHTTPRequestHandler):
     def kirim(self, konten, status=200):
@@ -103,6 +109,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         panjang = int(self.headers.get("Content-Length", 0))
+
         if panjang > 10_000:
             self.kirim("<h1>Data terlalu besar</h1>", 413)
             return
@@ -110,35 +117,46 @@ class Handler(BaseHTTPRequestHandler):
         data = parse_qs(self.rfile.read(panjang).decode("utf-8"))
         nama = data.get("nama", [""])[0].strip()
         email = data.get("email", [""])[0].strip().lower()
-        password = data.get("password", [""])[0]
+        nama_panggilan = data.get("nama_panggilan", [""])[0].strip()
 
-        if not nama or "@" not in email or len(password) < 8:
-            self.kirim("<h1>Data belum valid</h1><a href='/'>Coba lagi</a>", 400)
+        if not nama or "@" not in email or not nama_panggilan:
+            self.kirim(
+                "<h1>Data belum lengkap</h1><a href='/'>Coba lagi</a>",
+                400
+            )
             return
-
-        salt = os.urandom(16)
-        password_hash = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt, 600_000
-        )
 
         try:
             with sqlite3.connect(DB) as db:
                 db.execute(
                     """INSERT INTO peserta
-                       (nama, email, salt, password_hash, waktu_daftar)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (nama, email, salt, password_hash,
-                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                       (nama, email, nama_panggilan, waktu_daftar)
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        nama,
+                        email,
+                        nama_panggilan,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    )
                 )
         except sqlite3.IntegrityError:
-            self.kirim("<h1>Email sudah terdaftar</h1><a href='/'>Kembali</a>", 409)
+            self.kirim(
+                "<h1>Email sudah terdaftar</h1><a href='/'>Kembali</a>",
+                409
+            )
             return
 
-        print(f"Pendaftaran diterima: {nama} ({email})", flush=True)
-        self.kirim(
-            f"<h1>Pendaftaran berhasil!</h1>"
-            f"<p>Terima kasih, {html.escape(nama)}. Data kamu telah diterima.</p>"
+        print(
+            f"Pendaftaran diterima: {nama} / {nama_panggilan} ({email})",
+            flush=True
         )
+
+        self.kirim(
+            "<h1>Pendaftaran berhasil!</h1>"
+            f"<p>Terima kasih, {html.escape(nama_panggilan)}. "
+            "Data kamu telah diterima.</p>"
+        )
+
 
 print("Buka http://localhost:8000")
 HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
